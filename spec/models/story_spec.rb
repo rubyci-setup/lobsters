@@ -97,7 +97,9 @@ describe Story do
       "http://example.com:8000" => "example.com",
       "http://example.com:8000/" => "example.com",
       "http://www3.example.com/goose" => "example.com",
-      "http://flub.example.com" => "flub.example.com"
+      "http://flub.example.com" => "flub.example.com",
+      "http://www10.org" => "www10.org",
+      "http://www10.example.org" => "example.org"
     }.each_pair do |url, domain|
       story.url = url
       expect(story.domain.domain).to eq(domain)
@@ -229,6 +231,13 @@ describe Story do
     s.url = "https://factorable.net/"
     s.valid?
     expect(s.url).to eq("https://factorable.net/")
+  end
+
+  it "sets tags_a properly on an unsaved story" do
+    s = build(:story, tags_a: [])
+    expect(s.tags_a).to eq([])
+    s.tags_a = ["tag1", "tag2"]
+    expect(s.tags_a).to eq(["tag1", "tag2"])
   end
 
   it "calculates tag changes properly" do
@@ -511,5 +520,14 @@ describe Story do
     subject { Story.title_maximum_length }
 
     it { is_expected.to eq(150) }
+  end
+
+  describe "#preview_tags" do
+    it "allows accessing tags set by tags_a on unsaved stories" do
+      tag = Tag.find_by(tag: "tag1")
+      s = build(:story, tags_a: ["tag1"])
+      expect(s.preview_tags).to eq([tag])
+      expect(s.tags).to eq([])
+    end
   end
 end

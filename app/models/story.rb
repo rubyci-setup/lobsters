@@ -2,7 +2,8 @@
 
 class Story < ApplicationRecord
   belongs_to :user
-  belongs_to :domain, optional: true
+  belongs_to :domain, optional: true, counter_cache: true
+  belongs_to :origin, optional: true, counter_cache: true
   belongs_to :merged_into_story,
     class_name: "Story",
     foreign_key: "merged_story_id",
@@ -44,9 +45,13 @@ class Story < ApplicationRecord
     inverse_of: :to_story,
     dependent: :destroy
 
-  scope :base, ->(user) { includes(:hidings, :story_text, :user).not_deleted(user).unmerged.mod_preload?(user) }
+  scope :base, ->(user, unmerged: true) {
+    q = includes(:hidings, :story_text, :user).not_deleted(user).mod_preload?(user)
+    q = q.unmerged if unmerged
+    q
+  }
   scope :for_presentation, -> {
-    includes(:domain, :hidings, :user, :tags, taggings: :tag)
+    includes(:domain, :origin, :hidings, :user, :tags, taggings: :tag)
   }
   scope :mod_preload?, ->(user) {
     user.try(:is_moderator?) ? preload(:suggested_taggings, :suggested_titles) : all
@@ -113,7 +118,7 @@ class Story < ApplicationRecord
   }
 
   validates :title, length: {in: 3..150}, presence: true
-  validates :description, length: {maximum: (64 * 1024)}
+  validates :description, length: {maximum: 65_535}
   validates :url, length: {maximum: 250, allow_nil: true}
   validates :short_id, presence: true, length: {maximum: 6}
   validates :markeddown_description, length: {maximum: 16_777_215, allow_nil: true}
@@ -131,6 +136,7 @@ class Story < ApplicationRecord
 
   COMMENTABLE_DAYS = 90
   FLAGGABLE_DAYS = 14
+  DELETEABLE_DAYS = FLAGGABLE_DAYS * 2
 
   # the lowest a score can go
   FLAGGABLE_MIN_SCORE = -5
@@ -169,7 +175,10 @@ class Story < ApplicationRecord
     if url.present?
       already_posted_recently?
       check_not_banned_domain
+      check_not_banned_origin
       check_not_new_domain_from_new_user
+      # This would probably have a too-high false-positive rate, I want to have approvals first.
+      # check_not_new_origin_from_new_user
       check_not_pushcx_stream
       errors.add(:url, "is not valid") unless url.match(Utils::URL_RE)
     elsif description.to_s.strip == ""
@@ -224,12 +233,36 @@ class Story < ApplicationRecord
     end
   end
 
+  def check_not_new_origin_from_new_user
+    return unless url.present? && new_record? && domain && origin
+
+    if user&.is_new? && origin.stories.not_deleted(nil).count == 0
+      ModNote.tattle_on_story_origin!(self, "new user with new")
+      errors.add :url, <<-EXPLANATION
+        is from a domain that we know has multiple authors, like GitHub. We haven't
+        seen links from this origin '#{origin.identifier}' before.
+        We restrict new users from posting such links to discourage self-promotion and give
+        you time to learn about topicality. Skirting this with a URL shortener or tweet or something
+        will probably earn a ban.
+      EXPLANATION
+    end
+  end
+
   def check_not_banned_domain
     return unless url.present? && new_record? && domain
 
     if domain.banned?
       ModNote.tattle_on_story_domain!(self, "banned")
       errors.add(:url, "is from banned domain #{domain.domain}: #{domain.banned_reason}")
+    end
+  end
+
+  def check_not_banned_origin
+    return unless url.present? && new_record? && origin
+
+    if origin.banned?
+      ModNote.tattle_on_story_origin!(self, "banned")
+      errors.add(:url, "is from banned origin #{origin.identifier}: #{origin.banned_reason}")
     end
   end
 
@@ -551,6 +584,10 @@ class Story < ApplicationRecord
     @hider_count ||= HiddenStory.where(story_id: id).count
   end
 
+  def disownable_by_user?(user)
+    user && user.id == user_id && created_at < DELETEABLE_DAYS.days.ago
+  end
+
   def is_flaggable?
     if created_at && self.score > FLAGGABLE_MIN_SCORE
       Time.current - created_at <= FLAGGABLE_DAYS.days
@@ -705,13 +742,13 @@ class Story < ApplicationRecord
   end
 
   def tags_a
-    @_tags_a ||= taggings
-      .includes(:tag)
-      .reject(&:marked_for_destruction?)
-      .map { |t| t.tag.tag }
+    @_tags_a ||= Tag
+      .where(id: taggings.reject(&:marked_for_destruction?).map { |t| t.tag_id })
+      .pluck(:tag)
   end
 
   def tags_a=(new_tag_names_a)
+    @_tags_a = nil
     taggings.each do |tagging|
       if !new_tag_names_a.include?(tagging.tag.tag)
         tagging.mark_for_destruction
@@ -725,6 +762,10 @@ class Story < ApplicationRecord
       # the validation with check_tags
       taggings.build(tag_id: t.id)
     end
+  end
+
+  def preview_tags
+    Tag.where(id: taggings.map { |t| t.tag_id })
   end
 
   def save_suggested_tags_a_for_user!(new_tag_names_a, user)
@@ -898,13 +939,36 @@ class Story < ApplicationRecord
     created_at && created_at <= 1.hour && merged_story_id.nil?
   end
 
-  def set_domain(match)
-    name = match ? match[:domain].sub(/^www\d*\./, "") : nil
-    self.domain = name ? Domain.where(domain: name).first_or_initialize : nil
+  def set_domain_and_origin(domain_name)
+    domain_name&.sub!(/\Awww\d*\.(.+?\..+)/, '\1') # remove www\d* from domain if the url is not like www10.org
+    if domain_name.present?
+      self.domain = Domain.where(domain: domain_name).first_or_initialize
+      self.origin = domain&.find_or_create_origin(url)
+    else
+      self.domain = nil
+      self.origin = nil
+    end
   end
 
   def url=(u)
-    super(u.try(:strip)) or return if u.blank?
+    return if u.blank?
+    u = u.strip
+
+    # strip out tracking query params
+    if (match = u.match(/\A([^\?]+)\?(.+)\z/))
+      params = match[2].split(/[&\?]/)
+      # utm_ is google and many others; sk is medium; si is youtube source id
+      params.reject! { |p|
+        p.match(/^utm_(source|medium|campaign|term|content|referrer)=|^sk=|^gclid=|^fbclid=|^linkId=|^si=x/)
+      }
+      params.reject! { |p|
+        if /^lobsters|^src=lobsters|^ref=lobsters/x.match?(p)
+          ModNote.tattle_on_traffic_attribution!(self)
+          true
+        end
+      }
+      u = match[1] << (params.any? ? "?#{params.join("&")}" : "")
+    end
 
     if (match = u.match(Utils::URL_RE))
       # remove well-known port for http and https if present
@@ -915,20 +979,13 @@ class Story < ApplicationRecord
         @url_port = nil
       end
     end
-    set_domain(match)
 
-    # strip out tracking query params
-    if (match = u.match(/\A([^\?]+)\?(.+)\z/))
-      params = match[2].split(/[&\?]/)
-      # utm_ is google and many others; sk is medium; si is youtube source id
-      params.reject! { |p|
-        p.match(/^utm_(source|medium|campaign|term|content|referrer)=|^sk=|^gclid=|^fbclid=|^linkId=|^si=/x)
-      }
-      u = match[1] << (params.any? ? "?#{params.join("&")}" : "")
-    end
-
-    self.normalized_url = Utils.normalize(u)
+    # set field
     super
+
+    # set related fields
+    self.normalized_url = Utils.normalize(u)
+    set_domain_and_origin(match&.[](:domain))
   end
 
   def url_is_editable_by_user?(user)

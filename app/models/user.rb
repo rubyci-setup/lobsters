@@ -101,7 +101,7 @@ class User < ApplicationRecord
     format: {with: /\A#{VALID_USERNAME}\z/o},
     length: {maximum: 50},
     uniqueness: {case_sensitive: false}
-
+  validate :underscores_and_dashes_in_username
   validates :password_reset_token,
     length: {maximum: 75}
   validates :session_token,
@@ -126,6 +126,9 @@ class User < ApplicationRecord
 
   validates :karma,
     presence: true
+
+  validates :settings,
+    length: {maximum: 16_777_215}
 
   validates_each :username do |record, attr, value|
     if BANNED_USERNAMES.include?(value.to_s.downcase) || value.starts_with?("tag-")
@@ -172,6 +175,14 @@ class User < ApplicationRecord
 
   # minimum number of submitted stories before checking self promotion
   MIN_STORIES_CHECK_SELF_PROMOTION = 2
+
+  def underscores_and_dashes_in_username
+    username_regex = username.gsub(/_|-/, "[-_]")
+    return unless username_regex.include?("[-_]")
+
+    collisions = User.where("username REGEXP ?", username_regex).where.not(id: id)
+    errors.add(:username, "is already in use (perhaps swapping _ and -)") if collisions.any?
+  end
 
   def self.username_regex_s
     "/^" + VALID_USERNAME.to_s.gsub(/(\?-mix:|\(|\))/, "") + "$/"

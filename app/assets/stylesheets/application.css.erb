@@ -223,9 +223,14 @@ html {
 
 /* generics */
 
-/* force a vertical scrollbar to avoid page-shifting */
 html {
+	/* force a vertical scrollbar to avoid page-shifting */
 	overflow-y: scroll;
+
+	/* avoid automatic resizing of some text elements on phones in landscape */
+	-moz-text-size-adjust: none;
+	-webkit-text-size-adjust: none;
+	text-size-adjust: none;
 }
 
 body, textarea, input, button {
@@ -405,6 +410,23 @@ button:focus {
 	color: var(--color-fg-contrast-5);
 	font-style: italic;
 }
+
+form.story-disowner-form {
+	display: inline;
+	button {
+		background: none;
+		border: none;
+		padding: 0;
+		color: var(--color-fg-contrast-4-5);
+		text-decoration: none;
+		cursor: pointer;
+		outline: none;
+		&:not(.disable):hover {
+			color: var(--color-fg-contrast-4-5);
+		}
+	}
+}
+
 
 button,
 input[type="button"],
@@ -1153,7 +1175,8 @@ div#story_box button#story_fetch_title {
 }
 div#story_box input#story_title,
 div#story_box input#story_moderation_reason,
-div#story_box input#story_merge_story_short_id {
+div#story_box input#story_merge_story_short_id,
+div#domain_box input[type=text] {
 	width: 600px;
 }
 #story_box .title-reminder, #story_box .title-reminder-thanks {
@@ -1414,7 +1437,7 @@ table.moderations tr > td:nth-child(1) {
 	font-style: italic;
 }
 .hint.indent {
-	margin-left: 1em;
+	margin-left: 12em;
 }
 
 .box.wide label {
@@ -1960,6 +1983,9 @@ input[type="submit"].link_post.pushover_button {
 	footer {
 		text-align: center;
 		float: none;
+	}
+	.indent {
+		margin-left: 2em;
 	}
 }
 @media print {

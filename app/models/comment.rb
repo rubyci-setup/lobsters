@@ -100,18 +100,21 @@ class Comment < ApplicationRecord
     comment.to_s.strip.match(/\Atl;?dr.?$\z/i) &&
       errors.add(:base, "Wow!  A blue car!")
 
+    comment.to_s.strip.match(/\Abump/i) &&
+      errors.add(:base, "Don't bump threads.")
+
     comment.to_s.strip.match(/\A([[[:upper:]][[:punct:]]] )+[[[:upper:]][[:punct:]]]?$\z/) &&
       errors.add(:base, "D O N ' T")
 
-    comment.to_s.strip.match(/\A(me too|nice)([\.!])?\z/i) &&
+    comment.to_s.strip.match(/\A(me too|nice|\+1)([\.!])?\z/i) &&
       errors.add(:base, "Please just upvote the parent post instead.")
 
     hat.present? && user.wearable_hats.exclude?(hat) &&
       errors.add(:hat, "not wearable by user")
 
     # .try so tests don't need to persist a story and user
-    story.try(:accepting_comments?) ||
-      errors.add(:base, "Story is no longer accepting comments.")
+    new_record? && (story.try(:accepting_comments?) ||
+      errors.add(:base, "Story is no longer accepting comments."))
   end
 
   def self.regenerate_markdown
